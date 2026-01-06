@@ -4,11 +4,9 @@
         "version": "PLCN_v1",
         "update_url": null
     },
-    "exported_at": "2025-06-25T15:25:55-07:00",
-    "name": "Hybrid Music Bot",
+    "name": "Discord Music Bot (DMB)",
     "author": "support@pelican.panel",
-    "uuid": "a1b2c3d4-e5f6-40f2-918e-85556830365c",
-    "description": "A hybrid music bot (Local/Lavalink) running on Node 20 with FFmpeg support.",
+    "description": "DMB is a hybrid music bot that automatically installs from GitHub (karsandor2022/DMB).",
     "features": null,
     "docker_images": {
         "ghcr.io/parkervcp/yolks:nodejs_20": "ghcr.io/parkervcp/yolks:nodejs_20"
@@ -23,7 +21,7 @@
     },
     "scripts": {
         "installation": {
-            "script": "#!/bin/bash\r\n\r\n## File: Hybrid Music Bot Install Script\r\n## Author: Pelican Panel Community\r\n## License: MIT License\r\n\r\napt update\r\napt install -y tar curl jq python3 build-essential git\r\n\r\nmkdir -p /mnt/server\r\ncd /mnt/server\r\n\r\necho -e \"\\nInstalling dependencies...\"\r\n\r\n# Check if package.json exists (User uploaded files)\r\nif [ -f \"package.json\" ]; then\r\n    echo -e \"Found package.json, running yarn install...\"\r\n    yarn install --production --frozen-lockfile || yarn install --production\r\nelse\r\n    echo -e \"No package.json found. Please upload your bot files via SFTP.\"\r\n    echo -e \"Run the installer again after uploading.\"\r\nfi\r\n\r\necho -e \"\\nInstallation Complete!\"",
+            "script": "#!/bin/bash\r\n\r\n## File: DMB Auto-Git Installer\r\n## Repo: https://github.com/karsandor2022/DMB\r\n\r\n# 1. Install Basic Tools\r\napt update\r\napt install -y git curl jq python3 build-essential\r\n\r\nmkdir -p /mnt/server\r\ncd /mnt/server\r\n\r\n# 2. Clean old files (Exclude .env and data to prevent data loss)\r\necho -e \"🧹 Cleaning old files...\"\r\nfind . -mindepth 1 -maxdepth 1 ! -name \".env\" ! -name \"node_modules\" ! -name \"data\" -exec rm -rf {} +\r\n\r\n# 3. Clone Repository directly from Source\r\necho -e \"⬇️  Cloning DMB from GitHub...\"\r\ngit clone https://github.com/karsandor2022/DMB.git .\r\n\r\n# 4. Install Dependencies\r\nif [ -f \"package.json\" ]; then\r\n    echo -e \"📦 Installing dependencies via Yarn...\"\r\n    yarn install --production --frozen-lockfile || yarn install --production\r\nelse\r\n    echo -e \"❌ Error: package.json not found in the repository.\"\r\n    exit 1\r\nfi\r\n\r\necho -e \"\\n✅ Installation Complete!\"",
             "container": "node:20-bookworm-slim",
             "entrypoint": "/bin/bash"
         }
@@ -31,7 +29,7 @@
     "variables": [
         {
             "name": "Discord Bot Token",
-            "description": "Your Discord Bot Token from the Developer Portal.",
+            "description": "The token for your DMB instance.",
             "env_variable": "DISCORD_TOKEN",
             "default_value": "",
             "user_viewable": true,
@@ -40,8 +38,8 @@
             "sort": 1
         },
         {
-            "name": "Environment Mode",
-            "description": "Set to 'local' for standalone mode (InnerTube) or 'remote' for Lavalink mode.",
+            "name": "Audio Engine Mode",
+            "description": "Select 'local' for standard playback or 'remote' for Lavalink.",
             "env_variable": "NODE_ENV",
             "default_value": "local",
             "user_viewable": true,
@@ -51,7 +49,7 @@
         },
         {
             "name": "Spotify Client ID",
-            "description": "Required for Spotify support.",
+            "description": "Required for Spotify link support.",
             "env_variable": "SPOTIFY_CLIENT_ID",
             "default_value": "",
             "user_viewable": true,
@@ -61,7 +59,7 @@
         },
         {
             "name": "Spotify Client Secret",
-            "description": "Required for Spotify support.",
+            "description": "Required for Spotify link support.",
             "env_variable": "SPOTIFY_CLIENT_SECRET",
             "default_value": "",
             "user_viewable": true,
@@ -71,7 +69,7 @@
         },
         {
             "name": "YouTube API Key",
-            "description": "Optional key for searching YouTube.",
+            "description": "Optional: Helps avoid search rate limits.",
             "env_variable": "YOUTUBE_API_KEY",
             "default_value": "",
             "user_viewable": true,
@@ -81,7 +79,7 @@
         },
         {
             "name": "[Remote] Lavalink URL",
-            "description": "The URL of the Lavalink node (only used if Mode is 'remote').",
+            "description": "Required ONLY if Mode is set to 'remote'.",
             "env_variable": "LAVALINK_URL",
             "default_value": "localhost:2333",
             "user_viewable": true,
@@ -91,7 +89,7 @@
         },
         {
             "name": "[Remote] Lavalink Password",
-            "description": "The password for the Lavalink node.",
+            "description": "Required ONLY if Mode is set to 'remote'.",
             "env_variable": "LAVALINK_AUTH",
             "default_value": "youshallnotpass",
             "user_viewable": true,
@@ -101,7 +99,7 @@
         },
         {
             "name": "[Remote] Lavalink Name",
-            "description": "The name identifier for this node connection.",
+            "description": "Required ONLY if Mode is set to 'remote'.",
             "env_variable": "LAVALINK_NAME",
             "default_value": "Node1",
             "user_viewable": true,
