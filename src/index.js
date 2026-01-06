@@ -1,5 +1,11 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, Collection } = require('discord.js');
+const { 
+    Client, 
+    GatewayIntentBits, 
+    Collection, 
+    OAuth2Scopes, 
+    PermissionFlagsBits 
+} = require('discord.js');
 const { Player } = require('discord-player');
 const { DefaultExtractors } = require('@discord-player/extractor');
 const { YoutubeiExtractor } = require("discord-player-youtubei");
@@ -34,7 +40,13 @@ const loadCommands = (dir) => {
         }
     }
 };
-loadCommands(path.join(__dirname, 'commands'));
+
+const commandsPath = path.join(__dirname, 'commands');
+if (fs.existsSync(commandsPath)) {
+    loadCommands(commandsPath);
+} else {
+    console.warn("⚠️ Commands folder not found!");
+}
 
 // --- LOAD EVENTS ---
 const eventsPath = path.join(__dirname, 'events');
@@ -43,6 +55,7 @@ if (fs.existsSync(eventsPath)) {
     for (const file of eventFiles) {
         const event = require(path.join(eventsPath, file));
         client.on(event.name, (...args) => event.execute(client, ...args));
+        console.log(`✅ Event Loaded: ${event.name}`);
     }
 }
 
@@ -72,12 +85,32 @@ async function setupAudio() {
     }
 }
 
+// --- BOT READY EVENT ---
 client.once('ready', async () => {
     await setupAudio();
     console.log(`🤖 Logged in as ${client.user.tag}`);
-    // Register commands globally
+    
+    // 1. Register Slash Commands
     const data = client.commands.map(c => ({ name: c.name, description: c.description, options: c.options }));
     await client.application.commands.set(data);
+
+    // 2. GENERATE INVITE LINK
+    const inviteLink = client.generateInvite({
+        scopes: [OAuth2Scopes.Bot, OAuth2Scopes.ApplicationsCommands],
+        permissions: [
+            PermissionFlagsBits.Connect,
+            PermissionFlagsBits.Speak,
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.EmbedLinks,
+            PermissionFlagsBits.AttachFiles,
+            PermissionFlagsBits.UseExternalEmojis,
+            PermissionFlagsBits.ReadMessageHistory,
+            PermissionFlagsBits.ManageChannels
+        ]
+    });
+
+    console.log(`\n🔗 **INVITE LINK:**\n${inviteLink}\n`);
 });
 
 client.login(process.env.DISCORD_TOKEN);
