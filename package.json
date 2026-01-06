@@ -1,9 +1,14 @@
 {
-  "name": "discord-music-bot",
+  "name": "hybrid-music-bot",
   "version": "2.0.0",
+  "description": "DMB - Discord Music Bot",
   "main": "src/index.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
-    "start": "node src/index.js"
+    "start": "npm run install:deps && node src/index.js",
+    "install:deps": "yarn install --production --frozen-lockfile || yarn install --production"
   },
   "dependencies": {
     "discord.js": "^14.16.3",
@@ -14,5 +19,6 @@
     "shoukaku": "^3.4.0",
     "ffmpeg-static": "^5.2.0",
     "@discordjs/opus": "^0.10.0"
-  }
+  },
+  "packageManager": "yarn@1.22.22"
 }
