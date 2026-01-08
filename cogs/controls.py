@@ -45,7 +45,7 @@ class PlayerControls(View):
         pp_style = discord.ButtonStyle.green if self.player.paused else discord.ButtonStyle.red
         self.add_item(self.make_btn(pp_emoji, "pp", style=pp_style, row=0))
 
-        self.add_item(self.make_btn("🛑", "stop", style=discord.ButtonStyle.danger, row=0))
+        self.add_item(self.make_btn("⏹️", "stop",  row=0))
         self.add_item(self.make_btn("⏭️", "skip", row=0))
 
         is_looping = self.player.queue.mode == wavelink.QueueMode.loop
@@ -62,12 +62,12 @@ class PlayerControls(View):
         
         self.add_item(self.make_btn("📜 List", "list", style=discord.ButtonStyle.blurple, row=1))
 
-        mute_icon = "🔊" if self.player.volume > 0 else "🔇"
-        self.add_item(self.make_btn(mute_icon, "mute", row=1))
 
         # ROW 2: Vol Down, Vol Up
-        self.add_item(self.make_btn("🔉 Vol -", "vdown", row=2))
-        self.add_item(self.make_btn("🔊 Vol +", "vup", row=2))
+        self.add_item(self.make_btn("🔊 Volume Up ", "vup", row=2))
+        mute_icon = "🔊" if self.player.volume > 0 else "🔇"
+        self.add_item(self.make_btn(mute_icon, "mute", row=2))
+        self.add_item(self.make_btn("🔉 Volume Down ", "vdown", row=2))
 
         # EQ Dropdown
         if self.show_eq:
@@ -80,11 +80,68 @@ class PlayerControls(View):
         btn.callback = getattr(self, f"cb_{cb_id}")
         return btn
 
-    async def refresh(self, interaction):
+    async def update_embed(self, interaction: discord.Interaction):
+        """Refreshes buttons and the Progress Bar inside the Embed."""
         self.render_buttons()
-        await interaction.response.edit_message(view=self)
+        
+        # Check if the message has an embed to edit
+        if not interaction.message.embeds:
+            return await interaction.response.edit_message(view=self)
+            
+        embed = interaction.message.embeds[0]
+        
+        # 1. Update Title/Description with the Bar
+        if self.player.current:
+            # Generate the bar using the helper function
+            bar_text = helpers.create_progress_bar(self.player)
+            embed.description = f"Now Playing: **{self.player.current.title}**\n\n{bar_text}"
+            
+            # Update Thumbnail if changed (e.g. playlist)
+            if self.player.current.artwork:
+                embed.set_thumbnail(url=self.player.current.artwork)
+        else:
+            embed.description = "Nothing is playing."
+        
+        # 2. Update Footer (Volume / EQ)
+        settings = await database.get_settings(interaction.guild_id)
+        embed.set_footer(text=f"EQ: {settings['eq_preset'].title()} | Vol: {self.player.volume}%")
+        
+        await interaction.response.edit_message(embed=embed, view=self)
 
-    # --- CALLBACKS ---
+    # --- CALLBACKS (Make sure they call update_embed) ---
+    async def cb_pp(self, interaction):
+        await self.player.pause(not self.player.paused)
+        await self.update_embed(interaction)
+
+    async def cb_rw(self, interaction):
+        # Seek Backwards
+        new_pos = max(0, self.player.position - (SEEK_SEC * 1000))
+        await self.player.seek(new_pos)
+        await self.update_embed(interaction)
+
+    async def cb_ff(self, interaction):
+        # Seek Forwards
+        if self.player.current:
+            new_pos = min(self.player.current.length, self.player.position + (SEEK_SEC * 1000))
+            await self.player.seek(new_pos)
+        await self.update_embed(interaction)
+
+    async def cb_vdown(self, interaction):
+        settings = await database.get_settings(interaction.guild_id)
+        step = settings['vol_step']
+        new_vol = max(0, self.player.volume - step)
+        await self.player.set_volume(new_vol)
+        await database.update_setting(interaction.guild_id, "volume", new_vol)
+        await self.update_embed(interaction)
+
+    async def cb_vup(self, interaction):
+        settings = await database.get_settings(interaction.guild_id)
+        step = settings['vol_step']
+        new_vol = min(100, self.player.volume + step)
+        await self.player.set_volume(new_vol)
+        await database.update_setting(interaction.guild_id, "volume", new_vol)
+        await self.update_embed(interaction)
+
     async def cb_prev(self, interaction):
         try:
             if self.player.queue.history:
@@ -92,10 +149,6 @@ class PlayerControls(View):
                 await interaction.response.send_message("Replaying previous.", ephemeral=True)
             else: await interaction.response.send_message("No history.", ephemeral=True)
         except: pass
-
-    async def cb_pp(self, interaction):
-        await self.player.pause(not self.player.paused)
-        await self.refresh(interaction)
 
     async def cb_stop(self, interaction):
         await self.player.disconnect()
@@ -113,14 +166,6 @@ class PlayerControls(View):
             self.player.queue.mode = wavelink.QueueMode.normal
             await interaction.response.send_message("🔁 Loop Disabled", ephemeral=True)
         await self.refresh(interaction)
-
-    async def cb_rw(self, interaction):
-        await self.player.seek(max(0, self.player.position - (SEEK_SEC * 1000)))
-        await interaction.response.defer()
-
-    async def cb_ff(self, interaction):
-        await self.player.seek(min(self.player.current.length, self.player.position + (SEEK_SEC * 1000)))
-        await interaction.response.defer()
 
     async def cb_eq(self, interaction):
         self.show_eq = not self.show_eq
@@ -163,18 +208,3 @@ class PlayerControls(View):
             await self.player.set_volume(vol)
         await self.refresh(interaction)
 
-    async def cb_vdown(self, interaction):
-        settings = await database.get_settings(interaction.guild_id)
-        step = settings['vol_step']
-        new_vol = max(0, self.player.volume - step)
-        await self.player.set_volume(new_vol)
-        await database.update_setting(interaction.guild_id, "volume", new_vol)
-        await interaction.response.send_message(f"Volume: {new_vol}%", ephemeral=True)
-
-    async def cb_vup(self, interaction):
-        settings = await database.get_settings(interaction.guild_id)
-        step = settings['vol_step']
-        new_vol = min(100, self.player.volume + step)
-        await self.player.set_volume(new_vol)
-        await database.update_setting(interaction.guild_id, "volume", new_vol)
-        await interaction.response.send_message(f"Volume: {new_vol}%", ephemeral=True)

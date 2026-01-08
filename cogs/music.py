@@ -1,10 +1,11 @@
 import discord
 import wavelink
+import asyncio
+import os
 from discord.ext import commands
 from discord import app_commands
 from cogs.controls import PlayerControls
 from utils import database, helpers
-import datetime
 
 class Music(commands.Cog):
     def __init__(self, bot):
@@ -16,9 +17,49 @@ class Music(commands.Cog):
             await interaction.response.send_message("❌ I am not connected to a voice channel.", ephemeral=True)
             return None
         return interaction.guild.voice_client
+    
+    @commands.Cog.listener()
+    async def on_wavelink_track_end(self, payload: wavelink.TrackEndEventPayload):
+        player = payload.player
+        if not player:
+            return
 
-    # --- 1. PLAY & STOP ---
-    @app_commands.command(name="play", description="Search and play a song from YouTube/Spotify")
+        # IGNORE: If the track was "replaced" (e.g. user ran /skip or /play), 
+        # the player is already handling the new song.
+        if payload.reason == "replaced":
+            return
+
+        # SCENARIO 1: Queue is NOT empty -> Play next song
+        if not player.queue.is_empty:
+            next_track = player.queue.get()
+            await player.play(next_track)
+            return
+
+        # SCENARIO 2: Queue IS empty -> Start Auto-Leave Timer using DATABASE info
+        # 1. Fetch settings from the database for this specific guild
+        guild_settings = await database.get_settings(player.guild.id)
+        
+        # 2. Extract values from the database result
+        #    If DB fails or returns None, fallback to defaults (True / 300s)
+        if guild_settings:
+            should_leave = guild_settings.get("auto_leave", True)
+            wait_time = guild_settings.get("leave_time", 300) # Note: DB column is 'leave_time'
+        else:
+            should_leave = True
+            wait_time = 300
+
+        # 3. Execute logic based on those settings
+        if should_leave:
+            # print(f"Queue empty. Waiting {wait_time}s...")
+            await asyncio.sleep(wait_time)
+            
+            # Double check: Are we still connected, not playing, and queue empty?
+            if player.guild.voice_client and not player.playing and player.queue.is_empty:
+                await player.disconnect()
+                # print(f"Disconnected from {player.guild.name} due to inactivity.")
+
+    # --- 1. PLAY ---
+    @app_commands.command(name="play", description="Search and play a song")
     @app_commands.describe(search="The song name or link")
     async def play(self, interaction: discord.Interaction, search: str):
         if not interaction.user.voice:
@@ -26,11 +67,9 @@ class Music(commands.Cog):
 
         await interaction.response.defer()
 
-        # Connect if not connected
         if not interaction.guild.voice_client:
             try:
                 player: wavelink.Player = await interaction.user.voice.channel.connect(cls=wavelink.Player)
-                # Restore DB settings
                 settings = await database.get_settings(interaction.guild_id)
                 await player.set_volume(settings['volume'])
                 await helpers.apply_eq(player, settings['eq_preset'])
@@ -39,7 +78,6 @@ class Music(commands.Cog):
         else:
             player: wavelink.Player = interaction.guild.voice_client
 
-        # Search
         try:
             tracks = await wavelink.Playable.search(search)
             if not tracks:
@@ -73,14 +111,29 @@ class Music(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"❌ Error playing track: {e}")
 
-    @app_commands.command(name="stop", description="Stop music and disconnect")
+    # --- 2. STOP (Clear Queue + Stop Music + STAY) ---
+    @app_commands.command(name="stop", description="Stop music and clear queue (Stays in Voice)")
     async def stop(self, interaction: discord.Interaction):
         player = await self.get_player(interaction)
         if player:
+            # 1. Clear upcoming songs
+            player.queue.clear()
+            # 2. Skip current song (force stop since queue is empty)
+            await player.skip(force=True)
+            await interaction.response.send_message("🛑 Music stopped and queue cleared.")
+
+    # --- 3. LEAVE (Clear Queue + Stop Music + DISCONNECT) ---
+    @app_commands.command(name="leave", description="Disconnect the bot completely")
+    async def leave(self, interaction: discord.Interaction):
+        player = await self.get_player(interaction)
+        if player:
+            # 1. Clear queue
+            player.queue.clear()
+            # 2. Disconnect (kills audio instantly)
             await player.disconnect()
             await interaction.response.send_message("👋 Disconnected.")
 
-    # --- 2. PAUSE & RESUME ---
+    # --- 4. PAUSE & RESUME ---
     @app_commands.command(name="pause", description="Pause or Resume the music")
     async def pause(self, interaction: discord.Interaction):
         player = await self.get_player(interaction)
@@ -89,7 +142,7 @@ class Music(commands.Cog):
             status = "Paused" if player.paused else "Resumed"
             await interaction.response.send_message(f"⏯️ Music **{status}**.")
 
-    # --- 3. SKIP & PREVIOUS ---
+    # --- 5. SKIP & PREVIOUS ---
     @app_commands.command(name="skip", description="Skip the current song")
     async def skip(self, interaction: discord.Interaction):
         player = await self.get_player(interaction)
@@ -110,7 +163,7 @@ class Music(commands.Cog):
             except:
                 await interaction.response.send_message("❌ Cannot go back.", ephemeral=True)
 
-    # --- 4. VOLUME & MUTE ---
+    # --- 6. VOLUME & MUTE ---
     @app_commands.command(name="volume", description="Set volume (0-100)")
     async def volume(self, interaction: discord.Interaction, level: int):
         player = await self.get_player(interaction)
@@ -133,7 +186,7 @@ class Music(commands.Cog):
                 await player.set_volume(vol)
                 await interaction.response.send_message("🔊 Unmuted.")
 
-    # --- 5. LOOP ---
+    # --- 7. LOOP ---
     @app_commands.command(name="loop", description="Toggle looping the current song")
     async def loop(self, interaction: discord.Interaction):
         player = await self.get_player(interaction)
@@ -145,8 +198,8 @@ class Music(commands.Cog):
                 player.queue.mode = wavelink.QueueMode.normal
                 await interaction.response.send_message("🔁 Loop **Disabled**.")
 
-    # --- 6. SEEK ---
-    @app_commands.command(name="seek", description="Seek to a specific position (e.g., 0 for restart)")
+    # --- 8. SEEK ---
+    @app_commands.command(name="seek", description="Seek to a specific position (seconds)")
     @app_commands.describe(seconds="Time in seconds to seek to")
     async def seek(self, interaction: discord.Interaction, seconds: int):
         player = await self.get_player(interaction)
@@ -173,7 +226,7 @@ class Music(commands.Cog):
             await player.seek(new_pos)
             await interaction.response.send_message("⏩ Fast-forwarded 15s.")
 
-    # --- 7. EQ ---
+    # --- 9. EQ ---
     @app_commands.command(name="eq", description="Set Equalizer Preset")
     @app_commands.choices(preset=[
         app_commands.Choice(name="Flat (Normal)", value="flat"),
@@ -188,7 +241,7 @@ class Music(commands.Cog):
             await database.update_setting(interaction.guild_id, "eq_preset", preset.value)
             await interaction.response.send_message(f"🎚️ EQ set to **{preset.name}**.")
 
-    # --- 8. QUEUE (LIST) ---
+    # --- 10. QUEUE ---
     @app_commands.command(name="queue", description="Show the upcoming songs")
     async def queue(self, interaction: discord.Interaction):
         player = await self.get_player(interaction)
@@ -197,29 +250,90 @@ class Music(commands.Cog):
             if not queue:
                 return await interaction.response.send_message("Queue is empty.", ephemeral=True)
             
-            # Get full list formatted
             desc = ""
             for i, track in enumerate(queue, 1):
                 line = f"**{i}.** {track.title} `[{helpers.format_time(track.length)}]`\n"
-                if len(desc) + len(line) > 3900: # Discord limit safety
+                if len(desc) + len(line) > 3900: 
                     desc += f"\n*...and {len(queue) - i + 1} more*"
                     break
                 desc += line
                 
             embed = discord.Embed(title="Current Queue", description=desc, color=discord.Color.blue())
             await interaction.response.send_message(embed=embed)
+    # ==============================
+    #        SETTINGS COMMANDS
+    # ==============================
+    # Group command: /settings [subcommand]
+    settings_group = app_commands.Group(name="settings", description="Configure the music bot settings")
 
-    # --- 9. MANUAL SYNC COMMAND (TEXT BASED) ---
-    # Type "!sync" in chat to run this.
+    @settings_group.command(name="view", description="View current settings for this server")
+    async def view_settings(self, interaction: discord.Interaction):
+        s = await database.get_settings(interaction.guild_id)
+        
+        embed = discord.Embed(title="⚙️ Server Settings", color=discord.Color.light_grey())
+        embed.add_field(name="Auto Leave", value="✅ Enabled" if s['auto_leave'] else "❌ Disabled", inline=True)
+        embed.add_field(name="Leave Timer", value=f"{s['leave_time']} seconds", inline=True)
+        embed.add_field(name="Volume Step", value=f"{s['vol_step']}%", inline=True)
+        embed.add_field(name="Default List Size", value=f"{s['list_size']} songs", inline=True)
+        embed.add_field(name="Default EQ", value=f"{s['eq_preset'].title()}", inline=True)
+        
+        await interaction.response.send_message(embed=embed)
+
+    @settings_group.command(name="auto_leave", description="Enable or Disable auto-disconnecting")
+    @app_commands.choices(enabled=[
+        app_commands.Choice(name="True (Enable)", value=1),
+        app_commands.Choice(name="False (Disable)", value=0)
+    ])
+    async def set_auto_leave(self, interaction: discord.Interaction, enabled: app_commands.Choice[int]):
+        is_enabled = bool(enabled.value)
+        await database.update_setting(interaction.guild_id, "auto_leave", is_enabled)
+        status = "Enabled" if is_enabled else "Disabled"
+        await interaction.response.send_message(f"✅ Auto Leave is now **{status}**.")
+
+    @settings_group.command(name="leave_timer", description="Seconds to wait before leaving (10 - 3600)")
+    async def set_leave_timer(self, interaction: discord.Interaction, seconds: int):
+        if 10 <= seconds <= 3600:
+            await database.update_setting(interaction.guild_id, "leave_time", seconds)
+            await interaction.response.send_message(f"✅ Auto Leave timer set to **{seconds} seconds**.")
+        else:
+            await interaction.response.send_message("❌ Time must be between 10 and 3600 seconds.", ephemeral=True)
+
+    @settings_group.command(name="volume_step", description="How much volume changes per click (1-50)")
+    async def set_vol_step(self, interaction: discord.Interaction, amount: int):
+        if 1 <= amount <= 50:
+            await database.update_setting(interaction.guild_id, "vol_step", amount)
+            await interaction.response.send_message(f"✅ Volume step set to **{amount}%**.")
+        else:
+            await interaction.response.send_message("❌ Step must be between 1 and 50.", ephemeral=True)
+
+    @settings_group.command(name="list_size", description="Set default number of songs shown in queue (1-25)")
+    async def set_list_size(self, interaction: discord.Interaction, amount: int):
+        if 1 <= amount <= 25:
+            await database.update_setting(interaction.guild_id, "list_size", amount)
+            await interaction.response.send_message(f"✅ Default list size set to **{amount} songs**.")
+        else:
+            await interaction.response.send_message("❌ Please choose between 1 and 25.", ephemeral=True)
+
+    @settings_group.command(name="default_eq", description="Set the default EQ loaded when bot joins")
+    @app_commands.choices(preset=[
+        app_commands.Choice(name="Flat (Normal)", value="flat"),
+        app_commands.Choice(name="Bass Boost", value="bass"),
+        app_commands.Choice(name="Treble Boost", value="treble"),
+        app_commands.Choice(name="Metal", value="metal"),
+    ])
+    async def set_default_eq(self, interaction: discord.Interaction, preset: app_commands.Choice[str]):
+        await database.update_setting(interaction.guild_id, "eq_preset", preset.value)
+        await interaction.response.send_message(f"✅ Default EQ set to **{preset.name}**.")
+
+    # --- 11. MANUAL SYNC COMMAND (TEXT BASED) ---
     @commands.command()
     async def sync(self, ctx):
         """Manually syncs slash commands to the current server."""
         try:
-            # Sync to current guild only (Instant update)
             synced = await self.bot.tree.sync(guild=ctx.guild)
             await ctx.send(f"✅ Successfully synced {len(synced)} commands to this server!")
         except Exception as e:
             await ctx.send(f"❌ Sync failed: {e}")
-            
+
 async def setup(bot):
     await bot.add_cog(Music(bot))
