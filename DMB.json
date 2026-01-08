@@ -4,108 +4,79 @@
         "version": "PLCN_v1",
         "update_url": null
     },
-    "name": "Discord Music Bot (DMB)",
-    "author": "support@pelican.panel",
-    "description": "DMB is a hybrid music bot that automatically installs from GitHub (karsandor2022/DMB).",
+    "name": "Discord Music Bot",
+    "author": "dev@example.com",
+    "description": "Discord Music Bot with Lavalink, SQLite persistence, and Interactive UI.",
     "features": null,
     "docker_images": {
-        "ghcr.io/parkervcp/yolks:nodejs_20": "ghcr.io/parkervcp/yolks:nodejs_20"
+        "ghcr.io/pterodactyl/yolks:python_3.11": "ghcr.io/pterodactyl/yolks:python_3.11"
     },
     "file_denylist": [],
-    "startup": "yarn start",
+    "startup": "if [ -f /home/container/requirements.txt ]; then pip install -U --prefix .local -r requirements.txt; fi; python3 main.py",
     "config": {
-        "files": "{\r\n    \".env\": {\r\n        \"parser\": \"properties\",\r\n        \"find\": {\r\n            \"DISCORD_TOKEN\": \"DISCORD_TOKEN={{server.build.env.DISCORD_TOKEN}}\",\r\n            \"NODE_ENV\": \"NODE_ENV={{server.build.env.NODE_ENV}}\",\r\n            \"SPOTIFY_CLIENT_ID\": \"SPOTIFY_CLIENT_ID={{server.build.env.SPOTIFY_CLIENT_ID}}\",\r\n            \"SPOTIFY_CLIENT_SECRET\": \"SPOTIFY_CLIENT_SECRET={{server.build.env.SPOTIFY_CLIENT_SECRET}}\",\r\n            \"YOUTUBE_API_KEY\": \"YOUTUBE_API_KEY={{server.build.env.YOUTUBE_API_KEY}}\",\r\n            \"LAVALINK_URL\": \"LAVALINK_URL={{server.build.env.LAVALINK_URL}}\",\r\n            \"LAVALINK_AUTH\": \"LAVALINK_AUTH={{server.build.env.LAVALINK_AUTH}}\",\r\n            \"LAVALINK_NAME\": \"LAVALINK_NAME={{server.build.env.LAVALINK_NAME}}\"\r\n        }\r\n    }\r\n}",
+        "files": "{\r\n    \".env\": {\r\n        \"parser\": \"properties\",\r\n        \"find\": {\r\n            \"BOT_TOKEN\": \"BOT_TOKEN={{server.build.env.BOT_TOKEN}}\",\r\n            \"LAVALINK_URI\": \"LAVALINK_URI={{server.build.env.LAVALINK_URI}}\",\r\n            \"LAVALINK_PASS\": \"LAVALINK_PASS={{server.build.env.LAVALINK_PASS}}\",\r\n            \"VOLUME_STEP\": \"VOLUME_STEP={{server.build.env.VOLUME_STEP}}\",\r\n            \"SEEK_SECONDS\": \"SEEK_SECONDS={{server.build.env.SEEK_SECONDS}}\",\r\n            \"QUEUE_LIST_SIZE\": \"QUEUE_LIST_SIZE={{server.build.env.QUEUE_LIST_SIZE}}\"\r\n        }\r\n    }\r\n}",
         "startup": "{\r\n    \"done\": \"Logged in as\"\r\n}",
         "logs": "{}",
         "stop": "^C"
     },
     "scripts": {
         "installation": {
-            "script": "#!/bin/bash\r\n\r\n## File: DMB Auto-Git Installer\r\n## Repo: https://github.com/karsandor2022/DMB\r\n\r\n# 1. Install Basic Tools\r\napt update\r\napt install -y git curl jq python3 build-essential\r\n\r\nmkdir -p /mnt/server\r\ncd /mnt/server\r\n\r\n# 2. Clean old files (Exclude .env and data to prevent data loss)\r\necho -e \"🧹 Cleaning old files...\"\r\nfind . -mindepth 1 -maxdepth 1 ! -name \".env\" ! -name \"node_modules\" ! -name \"data\" -exec rm -rf {} +\r\n\r\n# 3. Clone Repository directly from Source\r\necho -e \"⬇️  Cloning DMB from GitHub...\"\r\ngit clone https://github.com/karsandor2022/DMB.git .\r\n\r\n# 4. Install Dependencies\r\nif [ -f \"package.json\" ]; then\r\n    echo -e \"📦 Installing dependencies via Yarn...\"\r\n    yarn install --production --frozen-lockfile || yarn install --production\r\nelse\r\n    echo -e \"❌ Error: package.json not found in the repository.\"\r\n    exit 1\r\nfi\r\n\r\necho -e \"\\n✅ Installation Complete!\"",
-            "container": "node:20-bookworm-slim",
-            "entrypoint": "/bin/bash"
+            "script": "#!/bin/bash\r\napt update\r\napt install -y git sqlite3\r\n\r\nif [ ! -d \"/home/container\" ]; then\r\n    mkdir -p /home/container\r\nfi\r\n\r\ncd /home/container\r\necho \"Installation Complete\"",
+            "container": "python:3.11-slim",
+            "entrypoint": "bash"
         }
     },
     "variables": [
         {
-            "name": "Discord Bot Token",
-            "description": "The token for your DMB instance.",
-            "env_variable": "DISCORD_TOKEN",
+            "name": "Bot Token",
+            "env_variable": "BOT_TOKEN",
             "default_value": "",
             "user_viewable": true,
             "user_editable": true,
-            "rules": "required|string",
-            "sort": 1
+            "rules": "required|string"
         },
         {
-            "name": "Audio Engine Mode",
-            "description": "Select 'local' for standard playback or 'remote' for Lavalink.",
-            "env_variable": "NODE_ENV",
-            "default_value": "local",
+            "name": "Lavalink URI",
+            "env_variable": "LAVALINK_URI",
+            "default_value": "http://localhost:2333",
             "user_viewable": true,
             "user_editable": true,
-            "rules": "required|string|in:local,remote",
-            "sort": 2
+            "rules": "required|string"
         },
         {
-            "name": "Spotify Client ID",
-            "description": "Required for Spotify link support.",
-            "env_variable": "SPOTIFY_CLIENT_ID",
-            "default_value": "",
-            "user_viewable": true,
-            "user_editable": true,
-            "rules": "nullable|string",
-            "sort": 3
-        },
-        {
-            "name": "Spotify Client Secret",
-            "description": "Required for Spotify link support.",
-            "env_variable": "SPOTIFY_CLIENT_SECRET",
-            "default_value": "",
-            "user_viewable": true,
-            "user_editable": true,
-            "rules": "nullable|string",
-            "sort": 4
-        },
-        {
-            "name": "YouTube API Key",
-            "description": "Optional: Helps avoid search rate limits.",
-            "env_variable": "YOUTUBE_API_KEY",
-            "default_value": "",
-            "user_viewable": true,
-            "user_editable": true,
-            "rules": "nullable|string",
-            "sort": 5
-        },
-        {
-            "name": "[Remote] Lavalink URL",
-            "description": "Required ONLY if Mode is set to 'remote'.",
-            "env_variable": "LAVALINK_URL",
-            "default_value": "localhost:2333",
-            "user_viewable": true,
-            "user_editable": true,
-            "rules": "nullable|string",
-            "sort": 6
-        },
-        {
-            "name": "[Remote] Lavalink Password",
-            "description": "Required ONLY if Mode is set to 'remote'.",
-            "env_variable": "LAVALINK_AUTH",
+            "name": "Lavalink Password",
+            "env_variable": "LAVALINK_PASS",
             "default_value": "youshallnotpass",
             "user_viewable": true,
             "user_editable": true,
-            "rules": "nullable|string",
-            "sort": 7
+            "rules": "required|string"
         },
         {
-            "name": "[Remote] Lavalink Name",
-            "description": "Required ONLY if Mode is set to 'remote'.",
-            "env_variable": "LAVALINK_NAME",
-            "default_value": "Node1",
+            "name": "Volume Step",
+            "description": "Percent change per click (1-50)",
+            "env_variable": "VOLUME_STEP",
+            "default_value": "10",
             "user_viewable": true,
             "user_editable": true,
-            "rules": "nullable|string",
-            "sort": 8
+            "rules": "required|integer"
+        },
+        {
+            "name": "Seek Seconds",
+            "description": "Seconds to skip fwd/back",
+            "env_variable": "SEEK_SECONDS",
+            "default_value": "15",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer"
+        },
+        {
+            "name": "Queue List Size",
+            "description": "Default number of songs shown in list",
+            "env_variable": "QUEUE_LIST_SIZE",
+            "default_value": "5",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer"
         }
     ]
 }
