@@ -8,8 +8,11 @@ class MusicBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
-        super().__init__(command_prefix="!", intents=intents)
-
+        
+        # FIX: Load prefix from Environment Variable, default to "!" if missing
+        prefix = os.getenv("COMMAND_PREFIX", "!")
+        
+        super().__init__(command_prefix=prefix, intents=intents)
     async def setup_hook(self):
         # 1. Initialize Database
         await init_db()
