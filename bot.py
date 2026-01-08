@@ -23,7 +23,7 @@ class MusicBot(commands.Bot):
         
         # 3. Connect to Lavalink
         nodes = [wavelink.Node(
-            uri=os.getenv("LAVALINK_URI", "http://localhost:2333"),
+            uri=os.getenv("LAVALINK_URL", "http://localhost:2333"),
             password=os.getenv("LAVALINK_PASS", "youshallnotpass")
         )]
         await wavelink.Pool.connect(nodes=nodes, client=self, cache_capacity=100)
