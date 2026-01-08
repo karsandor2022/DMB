@@ -14,7 +14,7 @@
     "file_denylist": [],
     "startup": "if [ -f /home/container/requirements.txt ]; then pip install -U --prefix .local -r requirements.txt; fi; python3 main.py",
     "config": {
-        "files": "{\r\n    \".env\": {\r\n        \"parser\": \"properties\",\r\n        \"find\": {\r\n            \"BOT_TOKEN\": \"BOT_TOKEN={{server.build.env.BOT_TOKEN}}\",\r\n            \"LAVALINK_URI\": \"LAVALINK_URI={{server.build.env.LAVALINK_URI}}\",\r\n            \"LAVALINK_PASS\": \"LAVALINK_PASS={{server.build.env.LAVALINK_PASS}}\",\r\n            \"VOLUME_STEP\": \"VOLUME_STEP={{server.build.env.VOLUME_STEP}}\",\r\n            \"SEEK_SECONDS\": \"SEEK_SECONDS={{server.build.env.SEEK_SECONDS}}\",\r\n            \"QUEUE_LIST_SIZE\": \"QUEUE_LIST_SIZE={{server.build.env.QUEUE_LIST_SIZE}}\"\r\n        }\r\n    }\r\n}",
+        "files": "{}",
         "startup": "{\r\n    \"done\": \"Logged in as\"\r\n}",
         "logs": "{}",
         "stop": "^C"
