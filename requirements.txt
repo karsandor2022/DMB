@@ -1,4 +1,5 @@
-discord.py>=2.3.0
+discord.py>=2.6.0
 wavelink>=3.0.0
-python-dotenv
 aiosqlite
+python-dotenv
+pynacl
