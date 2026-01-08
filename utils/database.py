@@ -11,15 +11,16 @@ DEFAULT_EQ = "flat"
 
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("""
+        # FIX: Used f-string instead of ? because SQLite doesn't support params in CREATE TABLE defaults
+        await db.execute(f"""
             CREATE TABLE IF NOT EXISTS guild_settings (
                 guild_id INTEGER PRIMARY KEY,
-                volume INTEGER DEFAULT ?,
-                vol_step INTEGER DEFAULT ?,
-                list_size INTEGER DEFAULT ?,
-                eq_preset TEXT DEFAULT ?
+                volume INTEGER DEFAULT {DEFAULT_VOL},
+                vol_step INTEGER DEFAULT {DEFAULT_STEP},
+                list_size INTEGER DEFAULT {DEFAULT_LIST},
+                eq_preset TEXT DEFAULT '{DEFAULT_EQ}'
             )
-        """, (DEFAULT_VOL, DEFAULT_STEP, DEFAULT_LIST, DEFAULT_EQ))
+        """)
         await db.commit()
 
 async def get_settings(guild_id: int):
@@ -45,7 +46,10 @@ async def get_settings(guild_id: int):
             }
 
 async def update_setting(guild_id: int, column: str, value):
-    if column not in ["volume", "vol_step", "list_size", "eq_preset"]: return
+    # Security check to prevent SQL injection since we can't parameterize column names
+    if column not in ["volume", "vol_step", "list_size", "eq_preset"]: 
+        return
+        
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute(f"""
             INSERT INTO guild_settings (guild_id, {column}) VALUES (?, ?)
