@@ -41,7 +41,7 @@ class MusicBot(commands.Bot):
         except Exception as e:
             print(f"Failed to sync commands: {e}")
 
-        invite = discord.utils.oauth_url(self.user.id, permissions=discord.Permissions(8))
+        invite = discord.utils.oauth_url(self.user.id, permissions=discord.Permissions(2184563712))
         print(f"\n[INVITE LINK]: {invite}\n")
 
     async def on_wavelink_node_ready(self, payload: wavelink.NodeReadyEventPayload):
