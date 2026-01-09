@@ -9,24 +9,48 @@ SEEK_SEC = int(os.getenv("SEEK_SECONDS", "15"))
 class EQSelect(Select):
     def __init__(self, player):
         options = [
-            discord.SelectOption(label="Flat", value="flat"),
+            discord.SelectOption(label="Flat (Normal)", value="flat"),
             discord.SelectOption(label="Bass Boost", value="bass"),
-            discord.SelectOption(label="Treble", value="treble"),
+            discord.SelectOption(label="Treble Boost", value="treble"),
             discord.SelectOption(label="Metal", value="metal"),
         ]
         super().__init__(placeholder="Select EQ Preset...", min_values=1, max_values=1, options=options)
         self.player = player
 
     async def callback(self, interaction: discord.Interaction):
+        # FIX: Defer immediately to prevent "Interaction Failed"
+        await interaction.response.defer()
+        
         val = self.values[0]
-        await helpers.apply_eq(self.player, val)
-        await database.update_setting(interaction.guild_id, "eq_preset", val)
-        await interaction.response.send_message(f"EQ saved as **{val}**", ephemeral=True)
+        try:
+            await helpers.apply_eq(self.player, val)
+            await database.update_setting(interaction.guild_id, "eq_preset", val)
+            if self.view:
+                await self.view.update_embed(interaction)
+        except Exception as e:
+            print(f"EQ Error: {e}")
 
-class FullListView(View):
-    @discord.ui.button(label="Close List", style=discord.ButtonStyle.danger)
-    async def close(self, interaction: discord.Interaction, button: Button):
-        await interaction.message.delete()
+class ShortListView(View):
+    def __init__(self, queue):
+        super().__init__(timeout=180)
+        self.queue = queue
+
+    @discord.ui.button(label="Show Full List", style=discord.ButtonStyle.primary)
+    async def show_full(self, interaction: discord.Interaction, button: Button):
+        # Generate the full text
+        full_text = ""
+        for i, t in enumerate(self.queue, 1):
+            line = f"{i}. {t.title} [{helpers.format_time(t.length)}]\n"
+            if len(full_text) + len(line) > 3500:
+                full_text += "\n... [Truncated due to Discord limit]"
+                break
+            full_text += line
+        
+        full_embed = discord.Embed(title="Full Queue", description=full_text, color=discord.Color.blue())
+        
+        # FIX: view=None removes the "Close List" button.
+        # Users can use the blue "Dismiss message" text provided by Discord.
+        await interaction.response.send_message(embed=full_embed, ephemeral=True, view=None)
 
 class PlayerControls(View):
     def __init__(self, player: wavelink.Player, show_eq=False):
@@ -81,32 +105,43 @@ class PlayerControls(View):
         return btn
 
     async def update_embed(self, interaction: discord.Interaction):
-        """Refreshes buttons and the Progress Bar inside the Embed."""
         self.render_buttons()
         
-        # Check if the message has an embed to edit
-        if not interaction.message.embeds:
-            return await interaction.response.edit_message(view=self)
+        # 1. Determine which message to update
+        msg = interaction.message
+        if not msg and hasattr(self.player, 'last_msg'):
+            msg = self.player.last_msg
             
-        embed = interaction.message.embeds[0]
-        
-        # 1. Update Title/Description with the Bar
-        if self.player.current:
-            # Generate the bar using the helper function
-            bar_text = helpers.create_progress_bar(self.player)
-            embed.description = f"Now Playing: **{self.player.current.title}**\n\n{bar_text}"
-            
-            # Update Thumbnail if changed (e.g. playlist)
-            if self.player.current.artwork:
-                embed.set_thumbnail(url=self.player.current.artwork)
-        else:
-            embed.description = "Nothing is playing."
-        
-        # 2. Update Footer (Volume / EQ)
-        settings = await database.get_settings(interaction.guild_id)
-        embed.set_footer(text=f"EQ: {settings['eq_preset'].title()} | Vol: {self.player.volume}%")
-        
-        await interaction.response.edit_message(embed=embed, view=self)
+        if not msg: return
+
+        try:
+            if msg.embeds:
+                embed = msg.embeds[0]
+                
+                # Update Bar
+                if self.player.current:
+                    bar = helpers.create_progress_bar(self.player)
+                    embed.description = f"Now Playing: **{self.player.current.title}**\n\n{bar}"
+
+                current_eq = getattr(self.player, "eq_preset", "flat").title()
+                embed.set_footer(text=f"EQ: {current_eq} | Vol: {self.player.volume}%")
+                
+                # Update Footer
+                try:
+                    settings = await database.get_settings(interaction.guild_id)
+                    embed.set_footer(text=f"EQ: {settings['eq_preset'].title()} | Vol: {self.player.volume}%")
+                except: pass
+                
+                # 2. SMART EDIT LOGIC
+                # If we haven't responded to the click yet, use edit_message (Avoids "Interaction Failed")
+                if not interaction.response.is_done():
+                    await interaction.response.edit_message(embed=embed, view=self)
+                # If we ALREADY deferred (like in EQ or complex logic), edit the message directly
+                else:
+                    await msg.edit(embed=embed, view=self)
+
+        except Exception as e:
+            print(f"Update Embed Error: {e}")
 
     # --- CALLBACKS (Make sure they call update_embed) ---
     async def cb_pp(self, interaction):
@@ -143,12 +178,57 @@ class PlayerControls(View):
         await self.update_embed(interaction)
 
     async def cb_prev(self, interaction):
-        try:
-            if self.player.queue.history:
-                await self.player.play(self.player.queue.history[-1])
-                await interaction.response.send_message("Replaying previous.", ephemeral=True)
-            else: await interaction.response.send_message("No history.", ephemeral=True)
-        except: pass
+        # 1. Double Click Logic (Restart if > 10s)
+        if self.player.position > 10000:
+            await self.player.seek(0)
+            await self.update_embed(interaction)
+            return
+
+        # 2. History Logic
+        if hasattr(self.player, "custom_history") and len(self.player.custom_history) >= 1:
+            try:
+                # A. Set Flag (Prevents saving to history while going back)
+                self.player.is_going_back = True
+
+                # B. Get the Previous Song URI
+                prev_uri = self.player.custom_history.pop()
+
+                # C. Handle the Current Song (Put it back to Front of Queue)
+                if self.player.current:
+                    # Search again to get a fresh track object
+                    current_tracks = await wavelink.Playable.search(self.player.current.uri)
+                    if current_tracks:
+                        curr_track = current_tracks[0] if isinstance(current_tracks, list) else current_tracks
+                        
+                        # --- FIX: ADD TO FRONT OF QUEUE ---
+                        # Since .insert() is missing, we use this workaround:
+                        # 1. Copy current queue to a list
+                        existing_queue = list(self.player.queue)
+                        # 2. Clear the actual queue
+                        self.player.queue.clear()
+                        # 3. Add the song we just left to the START of our list
+                        existing_queue.insert(0, curr_track)
+                        # 4. Put everything back into the queue
+                        for t in existing_queue:
+                            await self.player.queue.put_wait(t)
+                        # ----------------------------------
+
+                # D. Play Previous
+                prev_tracks = await wavelink.Playable.search(prev_uri)
+                if prev_tracks:
+                    prev_track = prev_tracks[0] if isinstance(prev_tracks, list) else prev_tracks
+                    await self.player.play(prev_track)
+                    await interaction.response.defer()
+                else:
+                    await interaction.followup.send("❌ Could not load previous song.", ephemeral=True)
+                    self.player.is_going_back = False 
+                
+            except Exception as e:
+                print(f"Prev Error: {e}")
+                await interaction.followup.send("❌ Error going back.", ephemeral=True)
+                self.player.is_going_back = False
+        else:
+            await interaction.response.send_message("❌ No history available.", ephemeral=True)
 
     async def cb_stop(self, interaction):
         await self.player.disconnect()
@@ -169,35 +249,37 @@ class PlayerControls(View):
 
     async def cb_eq(self, interaction):
         self.show_eq = not self.show_eq
-        await self.refresh(interaction)
+        await self.update_embed(interaction)
 
-    async def cb_list(self, interaction):
+    async def cb_list(self, interaction: discord.Interaction):
         queue = self.player.queue
-        if not queue: return await interaction.response.send_message("Queue is empty.", ephemeral=True)
+        if not queue: 
+            return await interaction.response.send_message("Queue is empty.", ephemeral=True)
         
-        settings = await database.get_settings(interaction.guild_id)
-        list_size = settings['list_size']
+        # Get settings for list size
+        try:
+            settings = await database.get_settings(interaction.guild_id)
+            list_size = settings['list_size']
+        except:
+            list_size = 5
 
+        # Build the Short List (Up Next)
         desc = ""
         for i, track in enumerate(queue[:list_size], 1):
             desc += f"**{i}.** {track.title} `[{helpers.format_time(track.length)}]`\n"
         
         remaining = len(queue) - list_size
-        if remaining > 0: desc += f"\n*...and {remaining} more*"
+        if remaining > 0: 
+            desc += f"\n*...and {remaining} more*"
         
         embed = discord.Embed(title=f"Up Next (Showing {list_size})", description=desc, color=discord.Color.blue())
         
-        view = View()
+        # Logic: If there are hidden songs, use the Button View. If not, no buttons.
         if remaining > 0:
-            btn_full = Button(label="Show Full List", style=discord.ButtonStyle.primary)
-            async def full_list_callback(inter):
-                full_text = "\n".join([f"{i}. {t.title}" for i, t in enumerate(queue, 1)])
-                if len(full_text) > 4000: full_text = full_text[:4000] + "\n...[Truncated]"
-                full_embed = discord.Embed(title="Full Queue", description=full_text, color=discord.Color.blue())
-                await inter.response.send_message(embed=full_embed, ephemeral=True, view=FullListView(queue))
-            btn_full.callback = full_list_callback
-            view.add_item(btn_full)
-        await interaction.response.send_message(embed=embed, ephemeral=True, view=view)
+            # We pass the FULL queue to the view so it can display it
+            await interaction.response.send_message(embed=embed, ephemeral=True, view=ShortListView(queue))
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def cb_mute(self, interaction):
         if self.player.volume > 0:

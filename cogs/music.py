@@ -3,6 +3,7 @@ import wavelink
 import asyncio
 import os
 from discord.ext import commands
+from discord.ext import tasks
 from discord import app_commands
 from cogs.controls import PlayerControls
 from utils import database, helpers
@@ -10,6 +11,44 @@ from utils import database, helpers
 class Music(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        # Elindítjuk a háttérfolyamatot
+        self.player_update_loop.start()
+
+    def cog_unload(self):
+        # Ha leáll a bot, állítsuk le a loopot
+        self.player_update_loop.cancel()
+
+    # --- 5 MÁSODPERCES FRISSÍTŐ LOOP ---
+    @tasks.loop(seconds=6.0)  # 6 másodperc biztonságosabb a rate limit miatt
+    async def player_update_loop(self):
+        for node in wavelink.Pool.nodes.values():
+            for player in node.players.values():
+                # Csak akkor frissítsünk, ha játszik és van elmentett üzenet
+                if player.playing and hasattr(player, 'last_msg') and player.last_msg:
+                    try:
+                        # Újrageneráljuk a View-t és az Embed-et
+                        # Itt egy trükköt használunk: meghívjuk a PlayerControls update logikáját
+                        # Ehhez szükségünk van a PlayerControls osztályra importálva
+                        
+                        # Mivel nincs "interaction" objektumunk, manuálisan szerkesztjük
+                        embed = player.last_msg.embeds[0]
+                        bar_text = helpers.create_progress_bar(player)
+                        
+                        # Megtartjuk az eredeti címet, csak a leírást (progress bar) frissítjük
+                        current_title = player.current.title
+                        embed.description = f"Now Playing: **{current_title}**\n\n{bar_text}"
+                        
+                        # Megpróbáljuk szerkeszteni az üzenetet
+                        await player.last_msg.edit(embed=embed)
+                        
+                    except Exception as e:
+                        # Ha az üzenetet törölték, vagy hiba van, hagyjuk figyelmen kívül
+                        pass
+
+    @player_update_loop.before_loop
+    async def before_player_update(self):
+        # Megvárjuk, amíg a bot elindul
+        await self.bot.wait_until_ready()
 
     async def get_player(self, interaction: discord.Interaction) -> wavelink.Player:
         """Helper to get the player and check voice state."""
@@ -19,44 +58,102 @@ class Music(commands.Cog):
         return interaction.guild.voice_client
     
     @commands.Cog.listener()
+    async def on_wavelink_track_start(self, payload: wavelink.TrackStartEventPayload):
+        player = payload.player
+        if not player: return
+
+        # RESET FLAG: We have successfully started the "Previous" song, 
+        # so we can turn off the "going back" mode.
+        if hasattr(player, "is_going_back"):
+            player.is_going_back = False
+
+        # ... (Keep your existing UI/Embed code here: Delete old msg, Send new msg) ...
+        # 1. Delete old message
+        if hasattr(player, 'last_msg') and player.last_msg:
+            try:
+                await player.last_msg.delete()
+            except: pass
+
+        # 2. Get channel
+        channel = getattr(player, 'home', None)
+        if not channel: return 
+
+        # 3. Build Embed
+        track = payload.track
+        bar_text = helpers.create_progress_bar(player)
+        
+        embed = discord.Embed(
+            description=f"Now Playing: **{track.title}**\n\n{bar_text}",
+            color=discord.Color.green()
+        )
+        if track.artwork: embed.set_thumbnail(url=track.artwork)
+
+        if not hasattr(player, "eq_preset"):
+            try:
+                settings = await database.get_settings(player.guild.id)
+                player.eq_preset = settings['eq_preset']
+            except:
+                player.eq_preset = "flat"
+
+        current_eq = player.eq_preset.title()
+        embed.set_footer(text=f"EQ: {current_eq} | Vol: {player.volume}%")
+
+        try:
+            settings = await database.get_settings(player.guild.id)
+            embed.set_footer(text=f"EQ: {settings['eq_preset'].title()} | Vol: {player.volume}%")
+        except:
+            pass
+
+        # 4. Send
+        view = PlayerControls(player)
+        player.last_msg = await channel.send(embed=embed, view=view)
+
+
+    # --- 2. TRACK END (History Saving & Queue Logic) ---
+    @commands.Cog.listener()
     async def on_wavelink_track_end(self, payload: wavelink.TrackEndEventPayload):
         player = payload.player
-        if not player:
-            return
+        if not player: return
 
-        # IGNORE: If the track was "replaced" (e.g. user ran /skip or /play), 
-        # the player is already handling the new song.
+        # --- NEW HISTORY LOGIC ---
+        # Initialize if missing
+        if not hasattr(player, "custom_history"):
+            player.custom_history = []
+        
+        # Only add to history if we are NOT going back.
+        # If we skip, 'is_going_back' is False, so it ADDS to history (Correct).
+        # If we press Back, 'is_going_back' is True, so we DON'T add (Correct, it goes to Queue).
+        if not getattr(player, "is_going_back", False):
+            if payload.track.uri:
+                player.custom_history.append(payload.track.uri)
+        # -------------------------
+
+        # Ignore if replaced (e.g. Skip/Back button was used) 
+        # because the command handler (cb_skip/cb_prev) deals with the flow.
         if payload.reason == "replaced":
             return
 
-        # SCENARIO 1: Queue is NOT empty -> Play next song
+        # Normal Auto-Play Logic
         if not player.queue.is_empty:
-            next_track = player.queue.get()
-            await player.play(next_track)
+            await player.play(player.queue.get())
             return
 
-        # SCENARIO 2: Queue IS empty -> Start Auto-Leave Timer using DATABASE info
-        # 1. Fetch settings from the database for this specific guild
-        guild_settings = await database.get_settings(player.guild.id)
-        
-        # 2. Extract values from the database result
-        #    If DB fails or returns None, fallback to defaults (True / 300s)
-        if guild_settings:
+        # Auto-Leave Logic
+        try:
+            guild_settings = await database.get_settings(player.guild.id)
             should_leave = guild_settings.get("auto_leave", True)
-            wait_time = guild_settings.get("leave_time", 300) # Note: DB column is 'leave_time'
-        else:
+            wait_time = guild_settings.get("leave_time", 300)
+        except:
             should_leave = True
             wait_time = 300
 
-        # 3. Execute logic based on those settings
         if should_leave:
-            # print(f"Queue empty. Waiting {wait_time}s...")
             await asyncio.sleep(wait_time)
-            
-            # Double check: Are we still connected, not playing, and queue empty?
             if player.guild.voice_client and not player.playing and player.queue.is_empty:
+                if hasattr(player, 'last_msg') and player.last_msg:
+                    try: await player.last_msg.delete()
+                    except: pass
                 await player.disconnect()
-                # print(f"Disconnected from {player.guild.name} due to inactivity.")
 
     # --- 1. PLAY ---
     @app_commands.command(name="play", description="Search and play a song")
@@ -70,6 +167,8 @@ class Music(commands.Cog):
         if not interaction.guild.voice_client:
             try:
                 player: wavelink.Player = await interaction.user.voice.channel.connect(cls=wavelink.Player)
+                player.home = interaction.channel
+                player.custom_history = []
                 settings = await database.get_settings(interaction.guild_id)
                 await player.set_volume(settings['volume'])
                 await helpers.apply_eq(player, settings['eq_preset'])
@@ -77,6 +176,7 @@ class Music(commands.Cog):
                 return await interaction.followup.send("❌ Could not connect to voice channel.")
         else:
             player: wavelink.Player = interaction.guild.voice_client
+            player.home = interaction.channel
 
         try:
             tracks = await wavelink.Playable.search(search)
@@ -91,6 +191,14 @@ class Music(commands.Cog):
             else:
                 await player.queue.put_wait(track)
                 msg = f"✅ Added **{track.title}** to queue."
+
+                # Only send the "Added to queue" message if music is already playing
+                if player.playing:
+                    await interaction.followup.send(msg)
+                else:
+                    # If we are about to start playing, just acknowledge silently
+                    # The on_track_start event will send the big player interface
+                    await interaction.followup.send("✅ Loading track...", ephemeral=True)
 
             if not player.playing:
                 await player.play(player.queue.get())
