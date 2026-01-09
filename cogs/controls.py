@@ -133,12 +133,13 @@ class PlayerControls(View):
                 except: pass
                 
                 # 2. SMART EDIT LOGIC
-                # If we haven't responded to the click yet, use edit_message (Avoids "Interaction Failed")
                 if not interaction.response.is_done():
                     await interaction.response.edit_message(embed=embed, view=self)
-                # If we ALREADY deferred (like in EQ or complex logic), edit the message directly
+                    # Note: edit_message doesn't return the msg object easily, 
+                    # but usually interaction.message updates automatically.
                 else:
-                    await msg.edit(embed=embed, view=self)
+                    new_msg = await msg.edit(embed=embed, view=self)
+                    self.player.last_msg = new_msg
 
         except Exception as e:
             print(f"Update Embed Error: {e}")

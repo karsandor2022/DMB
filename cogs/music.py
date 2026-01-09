@@ -37,6 +37,9 @@ class Music(commands.Cog):
                         # Megtartjuk az eredeti címet, csak a leírást (progress bar) frissítjük
                         current_title = player.current.title
                         embed.description = f"Now Playing: **{current_title}**\n\n{bar_text}"
+
+                        current_eq = getattr(player, "eq_preset", "flat").title()
+                        embed.set_footer(text=f"EQ: {current_eq} | Vol: {player.volume}%")
                         
                         # Megpróbáljuk szerkeszteni az üzenetet
                         await player.last_msg.edit(embed=embed)
